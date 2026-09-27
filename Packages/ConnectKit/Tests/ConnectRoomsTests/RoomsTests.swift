@@ -20,15 +20,58 @@ struct RoomsTests {
         #expect(try JSONDecoder().decode(MemberRole.self, from: Data(#""MODERATOR""#.utf8)).canManage)
     }
 
-    @Test("ссылка-приглашение: base64 id комнаты, код уходит без декодирования")
+    static let token = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_abcde"
+
+    @Test("ссылка-приглашение: токен во фрагменте /l/v1/L2pvaW4, прежние ссылки с id комнаты устарели")
     func inviteLinks() throws {
+        let origin = try #require(URL(string: "https://cnnect.ru/"))
+        let url = try #require(InviteLinks.roomURL(origin: origin, token: Self.token))
+        #expect(url.absoluteString == "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)")
+        #expect(InviteLinks.room(from: url.absoluteString) == .token(Self.token))
+        #expect(InviteLinks.room(from: "  https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)  ") == .token(Self.token))
+        // Без токена или с токеном другой длины — вход невозможен.
+        #expect(InviteLinks.room(from: "https://cnnect.ru/l/v1/L2pvaW4") == .outdated)
+        #expect(InviteLinks.room(from: "https://cnnect.ru/l/v1/L2pvaW4#short") == .outdated)
+        // Прежние ссылки: /invite/<base64(roomId)> и /l/v1/<base64url("/invite/<roomId>")>.
+        #expect(InviteLinks.room(from: "https://cnnect.ru/invite/MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2") == .outdated)
+        let legacy = Data("/invite/0b8f2c1e-1111-2222-3333-444455556666".utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        #expect(InviteLinks.room(from: "https://cnnect.ru/l/v1/\(legacy)") == .outdated)
+        // Чужие ссылки — не приглашение в комнату.
+        #expect(InviteLinks.room(from: "https://example.com/other") == nil)
+        #expect(InviteLinks.room(from: "https://cnnect.ru/l/v2/L2pvaW4#\(Self.token)") == nil)
+        #expect(InviteLinks.decodeShareLink("/l/v1/L2pvaW4") == "/join")
+    }
+
+    @Test("вход по ссылке: токен уходит на сервер, устаревшая ссылка — без запроса, ошибки сервиса по коду")
+    func joinByInvite() async {
+        let api = FakeRoomsAPI()
+        let model = RoomsModel(me: "me", api: api)
+        #expect(await model.join(link: "https://cnnect.ru/invite/Q09ERQ==") == RoomsModel.outdatedLinkMessage)
+        #expect(await model.join(link: "мусор") == "Вставьте ссылку-приглашение")
+        #expect(await api.joinedTokens.isEmpty)
+        #expect(await model.join(link: "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)") == nil)
+        #expect(await api.joinedTokens == [Self.token])
+        await api.setInviteStatus(410, code: "INVITE_EXPIRED")
+        #expect(await model.join(link: "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)") == "Срок действия приглашения истёк — попросите новую ссылку")
+        await api.setInviteStatus(403, code: "ROOM_BANNED")
+        #expect(await model.join(link: "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)") == "Вы заблокированы в этой комнате")
+        await api.setInviteStatus(410, code: "INVITE_LINK_OUTDATED")
+        #expect(await model.join(link: "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)") == RoomsModel.outdatedLinkMessage)
+    }
+
+    @Test("ссылка-приглашение создаётся на сервере; без права — понятная ошибка")
+    func createInviteLink() async throws {
         let origin = try #require(URL(string: "https://cnnect.ru"))
-        let url = InviteLinks.roomURL(origin: origin, roomId: "0b8f2c1e-1111-2222-3333-444455556666")
-        #expect(url.absoluteString == "https://cnnect.ru/invite/MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2")
-        #expect(InviteLinks.roomCode(from: url.absoluteString) == "MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2")
-        #expect(InviteLinks.roomCode(from: "  abc%3D  ") == "abc%3D")
-        #expect(InviteLinks.roomCode(from: "https://cnnect.ru/invite/abc%3D") == "abc=")
-        #expect(InviteLinks.roomCode(from: "https://example.com/other") == nil)
+        let api = FakeRoomsAPI(rooms: [RoomDetails(id: "r", name: "R", channels: [])])
+        let model = RoomModel(roomId: "r", me: "me", api: api)
+        let result = await model.createInviteLink(origin: origin)
+        let url = try result.get()
+        #expect(url.absoluteString.hasPrefix("https://cnnect.ru/l/v1/L2pvaW4#"))
+        #expect(!url.absoluteString.contains("r/"))
+        #expect(await api.createdInvites == ["r"])
+        await api.setInviteStatus(403, code: "INVITE_FORBIDDEN")
+        #expect(await model.createInviteLink(origin: origin) == .failure(.forbidden))
     }
 
     @Test("комнаты: непрочитанное по текстовым каналам, создание и вход по ссылке")
@@ -49,8 +92,8 @@ struct RoomsTests {
         #expect(await model.createRoom(name: String(repeating: "a", count: 200)) != nil)
         #expect(await model.createRoom(name: " Новая ") == nil)
         #expect(model.rooms.map(\.name) == ["Команда", "Новая"])
-        #expect(await model.join(link: "https://cnnect.ru/invite/Q09ERQ==") == nil)
-        #expect(await api.joinedCodes == ["Q09ERQ=="])
+        #expect(await model.join(link: "https://cnnect.ru/l/v1/L2pvaW4#\(Self.token)") == nil)
+        #expect(await api.joinedTokens == [Self.token])
     }
 
     @Test("комната: разделение каналов, создание канала только с правами")

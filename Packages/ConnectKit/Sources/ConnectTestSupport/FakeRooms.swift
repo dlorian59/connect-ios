@@ -9,7 +9,12 @@ public actor FakeRoomsAPI: RoomsAPI {
     public private(set) var roomDetails: [String: RoomDetails]
     public private(set) var roles: [String: MemberRole]
     public private(set) var roomEvents: [String: [RoomEvent]]
-    public private(set) var joinedCodes: [String] = []
+    public private(set) var joinedTokens: [String] = []
+    public private(set) var createdInvites: [String] = []
+    /// Статус ответа `accept`/`createInvite` для проверки ошибок; nil — успех.
+    public var inviteStatus: Int?
+    public var inviteErrorCode: String?
+    public func setInviteStatus(_ status: Int?, code: String? = nil) { inviteStatus = status; inviteErrorCode = code }
     public private(set) var feedCards: [PostFeedCard]
     public private(set) var feedRoles: [String: MemberRole]
     public private(set) var feedPosts: [String: [FeedPost]]
@@ -62,8 +67,17 @@ public actor FakeRoomsAPI: RoomsAPI {
         return channel
     }
 
-    public func joinRoom(code: String, userId: String) async throws {
-        joinedCodes.append(code)
+    public func joinRoom(token: String) async throws {
+        if let inviteStatus { throw APIError.http(statusCode: inviteStatus, body: APIErrorBody(codeText: inviteErrorCode)) }
+        joinedTokens.append(token)
+    }
+
+    public func createInvite(roomId: String) async throws -> RoomInvite {
+        if let inviteStatus { throw APIError.http(statusCode: inviteStatus, body: APIErrorBody(codeText: inviteErrorCode)) }
+        createdInvites.append(roomId)
+        // Детерминированный токен той же формы, что у сервера: 43 символа base64url.
+        let token = String(repeating: "A", count: 40) + String(format: "%03d", createdInvites.count)
+        return RoomInvite(id: "invite-\(createdInvites.count)", roomId: roomId, token: token, uses: 0)
     }
 
     public func events(roomId: String, from: Date, to: Date) async throws -> [RoomEvent] {

@@ -3,6 +3,8 @@ import Foundation
 /// Тело ошибки сервисов Connect: `{ code, errMessage, message }`.
 public struct APIErrorBody: Decodable, Sendable, Equatable {
     public var code: Int?
+    /// Строковый код ошибки (`INVITE_EXPIRED` и т.п.); числовой код — в `code`.
+    public var codeText: String?
     public var errMessage: String?
     public var message: String?
 
@@ -12,8 +14,9 @@ public struct APIErrorBody: Decodable, Sendable, Equatable {
         case code, errMessage, message
     }
 
-    public init(code: Int? = nil, errMessage: String? = nil, message: String? = nil) {
+    public init(code: Int? = nil, codeText: String? = nil, errMessage: String? = nil, message: String? = nil) {
         self.code = code
+        self.codeText = codeText
         self.errMessage = errMessage
         self.message = message
     }
@@ -21,6 +24,9 @@ public struct APIErrorBody: Decodable, Sendable, Equatable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         code = container.decodeFlexibleInt(forKey: .code)
+        if code == nil, let text = try? container.decodeIfPresent(String.self, forKey: .code) {
+            codeText = text
+        }
         errMessage = try container.decodeIfPresent(String.self, forKey: .errMessage)
         message = try container.decodeIfPresent(String.self, forKey: .message)
     }
