@@ -1,3 +1,4 @@
+import ConnectCore
 import ConnectNetworking
 import ConnectTestSupport
 import Foundation
@@ -19,7 +20,25 @@ struct MeetingsTests {
         #expect(MeetingLinks.code(from: code) == code)
         #expect(MeetingLinks.code(from: "https://cnnect.ru/invite/abc") == nil)
         #expect(MeetingLinks.code(from: "https://cnnect.ru/share/meet/short") == nil)
-        #expect(MeetingLinks.url(origin: URL(string: "https://cnnect.ru")!, code: code).absoluteString == "https://cnnect.ru/share/meet/\(code)")
+        let link = MeetingLinks.url(origin: URL(string: "https://cnnect.ru")!, code: code).absoluteString
+        #expect(link == "https://cnnect.ru/l/v1/L3NoYXJlL21lZXQvQWJDZEVmR2hJaktsTW5PcFFyU3RVdld4WXowMTIzNDU2Nzg5Xy1hYmNkZQ")
+        #expect(!link.contains(code))
+        #expect(MeetingLinks.code(from: link) == code)
+        #expect(MeetingLinks.code(from: "https://cnnect.ru/l/v2/L3NoYXJlL21lZXQv") == nil)
+    }
+
+    @Test("ShareLinks: base64url без паддинга, эталон общий с веб-клиентом и бэкендом; опасные пути отбрасываются")
+    func shareLinks() {
+        #expect(ShareLinks.encodePath("/invite/0b2a6c1e-3d4f-4a5b-8c6d-7e8f9a0b1c2d") == "/l/v1/L2ludml0ZS8wYjJhNmMxZS0zZDRmLTRhNWItOGM2ZC03ZThmOWEwYjFjMmQ")
+        #expect(ShareLinks.encodePath("/комната?x=1") == "/l/v1/L9C60L7QvNC90LDRgtCwP3g9MQ")
+        #expect(ShareLinks.decode("https://cnnect.ru/l/v1/L9C60L7QvNC90LDRgtCwP3g9MQ?account=1") == "/комната?x=1")
+        for target in ["//evil.test/x", "/a\\b", "/l/v1/abc", "https://evil.test", "/a#b"] {
+            let payload = Data(target.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            #expect(ShareLinks.decode("/l/v1/\(payload)") == nil)
+            #expect(ShareLinks.encodePath(target) == nil)
+        }
+        #expect(ShareLinks.decode("/l/v1/garbage") == nil)
+        #expect(!ShareLinks.isShareLink("https://cnnect.ru/invite/abc"))
     }
 
     @Test("статусы сервиса превращаются в понятные ошибки")
@@ -46,7 +65,7 @@ struct MeetingsTests {
         let meetings = FakeMeetingsAPI()
 
         await model.createGuestLink(api: meetings, origin: URL(string: "https://cnnect.ru")!)
-        #expect(model.guestLink == "https://cnnect.ru/share/meet/\(String(repeating: "a", count: 43))")
+        #expect(model.guestLink == "https://cnnect.ru/l/v1/L3NoYXJlL21lZXQvYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ")
         #expect(await meetings.invitations.first?.groupId == "g1")
 
         await meetings.setFailure(.forbidden)

@@ -24,8 +24,10 @@ struct RoomsTests {
     func inviteLinks() throws {
         let origin = try #require(URL(string: "https://cnnect.ru"))
         let url = InviteLinks.roomURL(origin: origin, roomId: "0b8f2c1e-1111-2222-3333-444455556666")
-        #expect(url.absoluteString == "https://cnnect.ru/invite/MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2")
+        #expect(url.absoluteString == "https://cnnect.ru/l/v1/L2ludml0ZS8wYjhmMmMxZS0xMTExLTIyMjItMzMzMy00NDQ0NTU1NTY2NjY")
+        // Новая ссылка отдаёт сервису прежний base64(roomId); старая ссылка — тот же код.
         #expect(InviteLinks.roomCode(from: url.absoluteString) == "MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2")
+        #expect(InviteLinks.roomCode(from: "https://cnnect.ru/invite/MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2") == "MGI4ZjJjMWUtMTExMS0yMjIyLTMzMzMtNDQ0NDU1NTU2NjY2")
         #expect(InviteLinks.roomCode(from: "  abc%3D  ") == "abc%3D")
         #expect(InviteLinks.roomCode(from: "https://cnnect.ru/invite/abc%3D") == "abc=")
         #expect(InviteLinks.roomCode(from: "https://example.com/other") == nil)

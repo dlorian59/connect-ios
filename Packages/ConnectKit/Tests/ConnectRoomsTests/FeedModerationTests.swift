@@ -92,7 +92,9 @@ struct FeedModerationTests {
     func inviteLinks() async {
         let origin = URL(string: "https://cnnect.ru")!
         let link = InviteLinks.feedURL(origin: origin, feedId: feedId).absoluteString
+        #expect(link.hasPrefix("https://cnnect.ru/l/v1/") && !link.contains(feedId))
         #expect(InviteLinks.feedId(from: link) == feedId)
+        #expect(InviteLinks.feedId(from: "https://cnnect.ru/post-feed-invite/\(Data(feedId.utf8).base64EncodedString())") == feedId)
         let urlSafe = Data(feedId.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
         #expect(InviteLinks.feedId(from: "https://cnnect.ru/post-feed-invite/\(urlSafe)") == feedId)
         #expect(InviteLinks.feedId(from: "https://cnnect.ru/post-feed-invite/\(Data("not-a-uuid".utf8).base64EncodedString())") == nil)

@@ -437,11 +437,13 @@ public enum RoomDates {
     }
 }
 
-/// Ссылки-приглашения веб-клиента: `/invite/<base64(roomId)>` и `/post-feed-invite/<base64(feedId)>`.
+/// Ссылки-приглашения веб-клиента. Новые — `/l/v1/<base64url("/invite/<roomId>")>` и
+/// `/l/v1/<base64url("/post-feed-invite/<feedId>")>` (`ShareLinks`); прежние `/invite/<base64(roomId)>`
+/// и `/post-feed-invite/<base64(feedId)>` по-прежнему принимаются.
 public enum InviteLinks {
-    /// Код канала: `base64(feedId)`, в том числе в URL-safe варианте; принимается только UUID.
+    /// Код канала: id как есть (новая ссылка) или `base64(feedId)`, в том числе URL-safe; принимается только UUID.
     public static func feedId(from input: String) -> String? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = unpacked(input)
         let code: String
         if let range = trimmed.range(of: "/post-feed-invite/") {
             code = trimmed[range.upperBound...].split(separator: "/").first.map(String.init) ?? ""
@@ -450,29 +452,46 @@ public enum InviteLinks {
         } else {
             return nil
         }
-        var base64 = (code.removingPercentEncoding ?? code).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        let raw = code.removingPercentEncoding ?? code
+        if UUID(uuidString: raw) != nil, raw.count == 36 { return raw }
+        var base64 = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while base64.count % 4 != 0 { base64 += "=" }
         guard let data = Data(base64Encoded: base64), let decoded = String(data: data, encoding: .utf8), UUID(uuidString: decoded) != nil else { return nil }
         return decoded
     }
 
     public static func feedURL(origin: URL, feedId: String) -> URL {
-        origin.appendingPathComponent("post-feed-invite").appendingPathComponent(Data(feedId.utf8).base64EncodedString())
+        ShareLinks.url(origin: origin, target: "/post-feed-invite/\(feedId)")
+            ?? origin.appendingPathComponent("post-feed-invite").appendingPathComponent(Data(feedId.utf8).base64EncodedString())
     }
 
     public static func roomURL(origin: URL, roomId: String) -> URL {
-        origin.appendingPathComponent("invite").appendingPathComponent(Data(roomId.utf8).base64EncodedString())
+        ShareLinks.url(origin: origin, target: "/invite/\(roomId)")
+            ?? origin.appendingPathComponent("invite").appendingPathComponent(Data(roomId.utf8).base64EncodedString())
     }
 
-    /// Код комнаты из ссылки или из самого кода; сервису он уходит как есть, без декодирования.
+    /// Код комнаты из ссылки или из самого кода. Прежний код уходит сервису как есть, id комнаты из
+    /// новой ссылки — прежним `base64(roomId)`: его понимает бэкенд любой версии.
     public static func roomCode(from input: String) -> String? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = unpacked(input)
         guard !trimmed.isEmpty else { return nil }
+        let code: String
         if let range = trimmed.range(of: "/invite/") {
-            let code = trimmed[range.upperBound...].split(separator: "/").first.map(String.init) ?? ""
-            return code.removingPercentEncoding ?? code
+            let segment = trimmed[range.upperBound...].split(whereSeparator: { $0 == "/" || $0 == "?" }).first.map(String.init) ?? ""
+            code = segment.removingPercentEncoding ?? segment
+        } else if trimmed.contains("/") {
+            return nil
+        } else {
+            code = trimmed
         }
-        return trimmed.contains("/") ? nil : trimmed
+        if code.count == 36, UUID(uuidString: code) != nil { return Data(code.utf8).base64EncodedString() }
+        return code
+    }
+
+    /// Новая ссылка `/l/v1/...` → её исходный путь; прочее — как есть (без пробелов по краям).
+    private static func unpacked(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ShareLinks.decode(trimmed) ?? trimmed
     }
 }
 

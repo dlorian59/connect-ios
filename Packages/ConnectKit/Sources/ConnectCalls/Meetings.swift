@@ -1,16 +1,19 @@
+import ConnectCore
 import ConnectNetworking
 import Foundation
 
-/// Гостевая ссылка на идущий групповой звонок (`meetingRoute.ts`): `<origin>/share/meet/<code>`,
-/// код — 43 символа base64url.
+/// Гостевая ссылка на идущий групповой звонок (`meetingRoute.ts`): `<origin>/l/v1/<base64url("/share/meet/<code>")>`
+/// (`ShareLinks`), прежняя `<origin>/share/meet/<code>` тоже принимается; код — 43 символа base64url.
 public enum MeetingLinks {
     public static func url(origin: URL, code: String) -> URL {
-        origin.appendingPathComponent("share").appendingPathComponent("meet").appendingPathComponent(code)
+        ShareLinks.url(origin: origin, target: "/share/meet/\(code)")
+            ?? origin.appendingPathComponent("share").appendingPathComponent("meet").appendingPathComponent(code)
     }
 
     /// Код из ссылки или сам код; `nil`, если это не ссылка на встречу.
     public static func code(from input: String) -> String? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ShareLinks.decode(raw) ?? raw
         let candidate: Substring
         if let range = trimmed.range(of: "/share/meet/") {
             candidate = trimmed[range.upperBound...].split(whereSeparator: { $0 == "/" || $0 == "?" || $0 == "#" }).first ?? ""
