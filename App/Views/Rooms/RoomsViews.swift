@@ -116,8 +116,25 @@ private struct RoomScreen: View {
     @State private var isCalendarShown = false
     @State private var isInviteShown = false
     @State private var newChannel: NewChannel?
+    @State private var inviteLink: InviteLinkItem?
+    @State private var isCreatingInviteLink = false
+    @State private var inviteLinkError: String?
 
     private var name: String { model.details?.name ?? title }
+
+    private struct InviteLinkItem: Identifiable {
+        let url: URL
+        var id: String { url.absoluteString }
+    }
+
+    private func createInviteLink() async {
+        isCreatingInviteLink = true
+        defer { isCreatingInviteLink = false }
+        switch await model.createInviteLink(origin: origin) {
+        case let .success(url): inviteLink = InviteLinkItem(url: url)
+        case let .failure(error): inviteLinkError = error.message
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -179,6 +196,36 @@ private struct RoomScreen: View {
         .sheet(isPresented: $isCalendarShown) {
             RoomCalendarSheet(model: makeCalendar(model.roomId), canCreate: model.canManage)
         }
+        .sheet(item: $inviteLink) { item in
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Ссылка действует 7 дней. Её можно переслать; вступить сможет любой, у кого она есть.")
+                        .foregroundStyle(Palette.textSecondary)
+                    Text(item.url.absoluteString)
+                        .font(.footnote.monospaced())
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("room.inviteLink")
+                    ShareLink(item: item.url) {
+                        Label("Поделиться", systemImage: "square.and.arrow.up")
+                    }
+                    .accessibilityIdentifier("room.inviteLinkShare")
+                    Spacer()
+                }
+                .padding(16)
+                .navigationTitle("Ссылка-приглашение")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Готово") { inviteLink = nil }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+        }
+        .alert("Ссылка-приглашение", isPresented: Binding(get: { inviteLinkError != nil }, set: { if !$0 { inviteLinkError = nil } })) {
+            Button("OK", role: .cancel) { inviteLinkError = nil }
+        } message: {
+            Text(inviteLinkError ?? "")
+        }
         .sheet(isPresented: $isInviteShown) {
             GroupMembersSheet(members: model.details?.members ?? [], contacts: groupTools.contacts()) { contact in
                 await inviteToRoom(model.roomId, contact)
@@ -201,12 +248,22 @@ private struct RoomScreen: View {
                 .accessibilityHidden(true)
             Spacer()
             ShellIconButton(systemImage: "person.badge.plus", label: "Пригласить в комнату", identifier: "room.invite") { isInviteShown = true }
-            ShareLink(item: InviteLinks.roomURL(origin: origin, roomId: model.roomId)) {
-                Image(systemName: "link")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Palette.textPrimary)
-                    .frame(width: 44, height: 44)
+            // Ссылка создаётся на сервере по нажатию: в ней токен приглашения, а не id комнаты.
+            Button {
+                Task { await createInviteLink() }
+            } label: {
+                Group {
+                    if isCreatingInviteLink {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "link")
+                            .font(.system(size: 18))
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                }
+                .frame(width: 44, height: 44)
             }
+            .disabled(isCreatingInviteLink)
             .accessibilityLabel("Поделиться ссылкой-приглашением")
             .accessibilityIdentifier("room.share")
             ShellIconButton(systemImage: "calendar", label: "Открыть календарь комнаты", identifier: "room.calendar") { isCalendarShown = true }

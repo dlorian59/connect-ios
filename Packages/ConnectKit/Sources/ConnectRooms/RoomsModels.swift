@@ -59,14 +59,44 @@ public final class RoomsModel {
         }
     }
 
+    public static let outdatedLinkMessage = "Ссылка устарела — попросите новую"
+
     public func join(link: String) async -> String? {
-        guard let code = InviteLinks.roomCode(from: link) else { return "Вставьте ссылку-приглашение" }
-        do {
-            try await api.joinRoom(code: code, userId: me)
-            await load()
-            return nil
-        } catch {
-            return "Не удалось войти по приглашению"
+        switch InviteLinks.room(from: link) {
+        case nil:
+            return "Вставьте ссылку-приглашение"
+        case .outdated:
+            // Прежние ссылки с id комнаты вход больше не дают: сервер не вызываем.
+            return Self.outdatedLinkMessage
+        case let .token(token):
+            do {
+                try await api.joinRoom(token: token)
+                await load()
+                return nil
+            } catch let APIError.http(statusCode, body) {
+                return Self.inviteErrorMessage(statusCode: statusCode, code: body?.codeText)
+            } catch {
+                return "Не удалось войти по приглашению"
+            }
+        }
+    }
+
+    /// Текст отказа `POST /api/room/invites/accept` по коду сервиса, иначе по статусу.
+    public static func inviteErrorMessage(statusCode: Int, code: String?) -> String {
+        switch code {
+        case "INVITE_LINK_OUTDATED", "INVITE_MALFORMED": return outdatedLinkMessage
+        case "INVITE_NOT_FOUND", "INVITE_REVOKED": return "Приглашение отозвано или не существует — попросите новую ссылку"
+        case "INVITE_EXPIRED": return "Срок действия приглашения истёк — попросите новую ссылку"
+        case "INVITE_EXHAUSTED": return "Приглашение уже использовано — попросите новую ссылку"
+        case "ROOM_BANNED": return "Вы заблокированы в этой комнате"
+        case "ROOM_NOT_FOUND": return "Комната больше не существует"
+        default:
+            switch statusCode {
+            case 400, 410: return outdatedLinkMessage
+            case 403: return "Нет доступа к этой комнате"
+            case 404: return "Приглашение отозвано или не существует — попросите новую ссылку"
+            default: return "Не удалось войти по приглашению"
+            }
         }
     }
 }
@@ -106,6 +136,30 @@ public final class RoomModel {
             return
         } catch {
             failed = details == nil
+        }
+    }
+
+    /// Новая ссылка-приглашение: сервер создаёт приглашение с токеном (срок 7 дней), id комнаты в ссылке нет.
+    public func createInviteLink(origin: URL) async -> Result<URL, InviteLinkError> {
+        do {
+            let invite = try await api.createInvite(roomId: roomId)
+            guard let token = invite.token, let url = InviteLinks.roomURL(origin: origin, token: token) else { return .failure(.other) }
+            return .success(url)
+        } catch let APIError.http(statusCode, _) where statusCode == 403 {
+            return .failure(.forbidden)
+        } catch {
+            return .failure(.other)
+        }
+    }
+
+    public enum InviteLinkError: Error, Equatable {
+        case forbidden, other
+
+        public var message: String {
+            switch self {
+            case .forbidden: "Нет права приглашать в эту комнату — попросите модератора"
+            case .other: "Не удалось создать ссылку-приглашение"
+            }
         }
     }
 

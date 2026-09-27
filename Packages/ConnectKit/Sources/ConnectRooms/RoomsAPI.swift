@@ -267,7 +267,10 @@ public protocol RoomsAPI: Sendable {
     func role(roomId: String) async throws -> MemberRole?
     func createRoom(name: String, creatorUserId: String) async throws
     func createChannel(roomId: String, name: String, kind: RoomChannel.Kind, creatorUserId: String) async throws -> RoomChannel
-    func joinRoom(code: String, userId: String) async throws
+    /// Вход по токену приглашения; пользователь — из JWT (`POST /api/room/invites/accept`).
+    func joinRoom(token: String) async throws
+    /// Новое приглашение: токен приходит один раз, сервер хранит только хэш (`POST /api/room/{id}/invites`).
+    func createInvite(roomId: String) async throws -> RoomInvite
     func events(roomId: String, from: Date, to: Date) async throws -> [RoomEvent]
     func createEvent(roomId: String, event: RoomEvent) async throws
 
@@ -325,8 +328,12 @@ public struct RemoteRoomsAPI: RoomsAPI {
         try await main.postDecoded("/api/channel/create", json: CreateChannelBody(name: name, type: kind, creator: .init(userId: creatorUserId), room: .init(id: roomId)), as: RoomChannel.self)
     }
 
-    public func joinRoom(code: String, userId: String) async throws {
-        try HTTPClient.requireSuccess(try await main.send(method: "PUT", path: "/api/room/invite-user", body: JSONEncoder().encode(JoinRoomBody(roomCode: code, userId: userId))))
+    public func joinRoom(token: String) async throws {
+        try HTTPClient.requireSuccess(try await main.post("/api/room/invites/accept", json: AcceptInviteBody(token: token)))
+    }
+
+    public func createInvite(roomId: String) async throws -> RoomInvite {
+        try await main.postDecoded("/api/room/\(Self.path(roomId))/invites", json: CreateInviteBody(), as: RoomInvite.self)
     }
 
     public func events(roomId: String, from: Date, to: Date) async throws -> [RoomEvent] {
@@ -437,8 +444,38 @@ public enum RoomDates {
     }
 }
 
-/// Ссылки-приглашения веб-клиента: `/invite/<base64(roomId)>` и `/post-feed-invite/<base64(feedId)>`.
+/// Приглашение в комнату из `POST /api/room/{roomId}/invites`; `token` есть только в ответе на создание.
+public struct RoomInvite: Decodable, Sendable, Equatable {
+    public var id: String
+    public var roomId: String
+    public var token: String?
+    public var expiresAt: Int64?
+    public var maxUses: Int?
+    public var uses: Int?
+
+    public init(id: String, roomId: String, token: String? = nil, expiresAt: Int64? = nil, maxUses: Int? = nil, uses: Int? = nil) {
+        self.id = id
+        self.roomId = roomId
+        self.token = token
+        self.expiresAt = expiresAt
+        self.maxUses = maxUses
+        self.uses = uses
+    }
+}
+
+/// Ссылка-приглашение в комнату, разобранная из вставленного текста.
+public enum RoomInviteLink: Equatable, Sendable {
+    /// `https://cnnect.ru/l/v1/L2pvaW4#<token>`: токен уходит в `POST /api/room/invites/accept`.
+    case token(String)
+    /// Прежняя ссылка с id комнаты (`/invite/…`, `/l/v1/<base64url("/invite/…")>`) или повреждённый токен:
+    /// вход по ней закрыт (этап 0 T45), сервер не вызывается.
+    case outdated
+}
+
+/// Ссылки-приглашения веб-клиента: комната — `/l/v1/L2pvaW4#<token>`, канал — `/post-feed-invite/<base64(feedId)>`.
 public enum InviteLinks {
+    /// base64url("/join") — путь ссылки-приглашения в комнату внутри `/l/v1/`.
+    public static let joinLinkPath = "/l/v1/L2pvaW4"
     /// Код канала: `base64(feedId)`, в том числе в URL-safe варианте; принимается только UUID.
     public static func feedId(from input: String) -> String? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -460,19 +497,47 @@ public enum InviteLinks {
         origin.appendingPathComponent("post-feed-invite").appendingPathComponent(Data(feedId.utf8).base64EncodedString())
     }
 
-    public static func roomURL(origin: URL, roomId: String) -> URL {
-        origin.appendingPathComponent("invite").appendingPathComponent(Data(roomId.utf8).base64EncodedString())
+    /// Ссылка-приглашение в комнату: токен во фрагменте — не попадает на сервер и в логи, id комнаты в ссылке нет.
+    public static func roomURL(origin: URL, token: String) -> URL? {
+        var base = origin.absoluteString
+        while base.hasSuffix("/") { base.removeLast() }
+        return URL(string: base + joinLinkPath + "#" + token)
     }
 
-    /// Код комнаты из ссылки или из самого кода; сервису он уходит как есть, без декодирования.
-    public static func roomCode(from input: String) -> String? {
+    /// Разбор вставленной ссылки на комнату; nil — это не ссылка на комнату (например, на встречу).
+    public static func room(from input: String) -> RoomInviteLink? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if let range = trimmed.range(of: "/invite/") {
-            let code = trimmed[range.upperBound...].split(separator: "/").first.map(String.init) ?? ""
-            return code.removingPercentEncoding ?? code
+        guard !trimmed.isEmpty, let components = URLComponents(string: trimmed) else { return nil }
+        var path = components.percentEncodedPath
+        if path.hasPrefix("/l/") {
+            guard let target = decodeShareLink(path) else { return nil }
+            path = target
         }
-        return trimmed.contains("/") ? nil : trimmed
+        if path == "/join" || path == "/join/" {
+            guard let fragment = components.percentEncodedFragment, isToken(fragment) else { return .outdated }
+            return .token(fragment)
+        }
+        if path == "/invite" || path.hasPrefix("/invite/") { return .outdated }
+        return nil
+    }
+
+    /// Путь приложения из `/l/v1/<base64url>` без query (`shareLink.ts`, `ShareLinks.java`); nil — не v1 или повреждено.
+    public static func decodeShareLink(_ path: String) -> String? {
+        var parts = path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count == 3, parts[0] == "l", parts[1] == "v1" else { return nil }
+        let encoded = parts.removeLast()
+        guard encoded.count >= 2, encoded.count <= 2800,
+              encoded.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_" }) else { return nil }
+        var base64 = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while base64.count % 4 != 0 { base64 += "=" }
+        guard let data = Data(base64Encoded: base64), let target = String(data: data, encoding: .utf8) else { return nil }
+        guard target.hasPrefix("/"), !target.hasPrefix("//"), !target.hasPrefix("/l/") else { return nil }
+        return target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init)
+    }
+
+    /// Токен приглашения — 32 байта в base64url без паддинга, ровно 43 символа.
+    static func isToken(_ value: String) -> Bool {
+        value.count == 43 && value.unicodeScalars.allSatisfy { ($0.isASCII && CharacterSet.alphanumerics.contains($0)) || $0 == "-" || $0 == "_" }
     }
 }
 
@@ -491,10 +556,12 @@ private struct CreateChannelBody: Encodable, Sendable {
     let room: Room
 }
 
-private struct JoinRoomBody: Encodable, Sendable {
-    let roomCode: String
-    let userId: String
+private struct AcceptInviteBody: Encodable, Sendable {
+    let token: String
 }
+
+/// Пустое тело — срок и лимит по умолчанию сервера (7 дней, без лимита использований).
+private struct CreateInviteBody: Encodable, Sendable {}
 
 private struct CreateFeedBody: Encodable, Sendable {
     let name: String
